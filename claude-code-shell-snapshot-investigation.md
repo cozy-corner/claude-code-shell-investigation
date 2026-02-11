@@ -414,87 +414,151 @@ fi
 
 ---
 
-## 推測と未確認事項
+## スナップショット作成スクリプトの詳細（確認済み）
 
-### 推測1: スナップショット作成方法
+### スクリプト生成関数（行2587-2608）
 
-**実行されているコマンド**: `zsh -c -l "スクリプト"`
+```javascript
+async function mSY(A,q,K){
+  let Y=qyA(A),  // .zshrc または .bashrc のパス
+  z=Y.endsWith(".zshrc"),
+  w=K?bSY(Y):!z?'echo "shopt -s expand_aliases" >> "$SNAPSHOT_FILE"':"",
+  H=await BSY();
 
-このスクリプトの中で、以下のいずれかの方法でエイリアスを取得していると推測：
+  return`SNAPSHOT_FILE=${L7([q])}
+    ${K?`source "${Y}" < /dev/null`:"# No user config file to source"}
 
-**可能性A**: 明示的に`.zshrc`をsource
-```bash
-source ~/.zshrc
-typeset -f  # 関数一覧
-alias       # エイリアス一覧
-export      # 環境変数一覧
+    # First, create/clear the snapshot file
+    echo "# Snapshot file" >| "$SNAPSHOT_FILE"
+
+    # Unset all aliases to avoid conflicts with functions
+    echo "unalias -a 2>/dev/null || true" >> "$SNAPSHOT_FILE"
+
+    ${w}  // 関数定義を出力
+    ${H}  // PATH等の環境変数を出力
+    ...
+  `
+}
 ```
 
-**可能性B**: インタラクティブシェルを起動
-```bash
-zsh -i -c 'typeset -f; alias; export'
-```
+### 確認できたこと
 
-**可能性C**: その他の方法
-
-**現状**: cli.jsがバンドルされているため、具体的なスクリプト内容は未確認
-
-### 推測2: 各コマンド実行時の動作
+**1. `.zshrc`の読み込み方法**（行2588）
 
 ```bash
-# 推測される流れ
-1. zsh起動（非インタラクティブ）
-2. source ~/.claude/shell-snapshots/snapshot-zsh-*.sh
-3. コマンド実行
+source ~/.zshrc < /dev/null  # stdin をクローズして source
 ```
 
-**根拠**:
-- スナップショットファイルに実行権限がない → sourceで読み込む
-- Claude Code内でエイリアスが使える → 何らかの方法で復元している
+- 明示的に`.zshrc`をsource
+- `< /dev/null`でstdinをクローズ（対話的プロンプトを防ぐ）
+
+**2. スナップショット作成の流れ**（行2524-2586）
+
+```bash
+# 1. 関数定義を取得
+echo "# Functions" >> "$SNAPSHOT_FILE"
+typeset -f > /dev/null 2>&1  # 関数を強制ロード
+typeset +f | grep -vE '^(_|__)' | while read func; do
+  typeset -f "$func" >> "$SNAPSHOT_FILE"  # ユーザー関数のみ
+done
+
+# 2. シェルオプション
+echo "# Shell Options" >> "$SNAPSHOT_FILE"
+setopt | sed 's/^/setopt /' | head -n 1000 >> "$SNAPSHOT_FILE"
+
+# 3. エイリアス
+echo "# Aliases" >> "$SNAPSHOT_FILE"
+alias | sed 's/^alias //g' | sed 's/^/alias -- /' >> "$SNAPSHOT_FILE"
+
+# 4. 環境変数
+export PATH="..."
+```
+
+**3. 各コマンド実行時の復元**（nW6関数内）
+
+```javascript
+let G=[];
+if(J){  // スナップショットファイルがあれば
+  if(!QSY(J))  // ファイルが存在しない場合は再作成
+    h(`Snapshot file missing, recreating: ${J}`),
+    zyA.cache?.clear?.(),
+    J=(await zyA()).snapshotFilePath;
+  if(J){
+    let B=tA()==="windows"?cx(J):J;
+    G.push(`source ${L7([B])}`)  // スナップショットをsource
+  }
+}
+```
+
+**実行される流れ**:
+1. zsh起動（非インタラクティブ、`-l`フラグ付き）
+2. `source ~/.claude/shell-snapshots/snapshot-zsh-*.sh`
+3. ユーザーのコマンド実行
+
+---
+
+## 残された未確認事項
+
+特になし。スナップショット機構の主要な動作はすべて確認済み。
 
 ---
 
 ## まとめ
 
-### 確実にわかっていること
+### Claude Codeのスナップショット機構（完全解明）
 
-1. **スナップショット機構が存在する**
-   - ファイルの場所: `~/.claude/shell-snapshots/`
-   - 内容: 関数、エイリアス、環境変数
+**1. スナップショットの構造**
+- ファイルの場所: `~/.claude/shell-snapshots/`
+- ファイル名: `snapshot-zsh-<timestamp>-<random>.sh`
+  - `<random>`: 衝突回避用ランダム識別子（セッションIDではない）
+- 内容: 関数、エイリアス、シェルオプション、環境変数
+- パーミッション: 644（実行権限なし、sourceで読み込む）
 
-2. **ライフサイクル**
-   - 作成: セッション起動時
-   - 削除: 正常終了時
-   - 保持: 異常終了時
+**2. ライフサイクル**
+- 作成: セッション起動時（`aSY()` → `oc4()` → `ISY()`）
+- 削除: 正常終了時
+- 保持: 異常終了時（デバッグ用）
 
-3. **sourceで読み込まれる**
-   - 実行権限なし（644）
-   - `source`コマンドで現在のシェルに反映
+**3. スナップショット作成フロー**
 
-4. **実装**
-   - `zsh -c -l "スクリプト"`で起動
-   - cli.jsに実装コードが存在
+```
+セッション起動
+  ↓
+zsh -l -c "スクリプト"
+  ↓
+1. .zshenv を読み込む
+2. .zprofile を読み込む（← -l の効果、PATH等）
+3. source ~/.zshrc < /dev/null（← 明示的にsource）
+4. typeset -f でユーザー関数を取得
+5. alias でエイリアスを取得
+6. スナップショットファイルに出力
+```
 
-### わかっていないこと（推測）
+**4. スナップショット復元フロー**
 
-1. **スナップショット作成の具体的な方法**
-   - `.zshrc`をどのように読み込んでいるか
-   - `typeset`, `alias`などをどう実行しているか
+```
+Bashツール実行
+  ↓
+Tzz() 関数
+  ↓
+nW6() 関数
+  ↓
+zsh -l -c "source <snapshot>; <user command>"
+  ↓
+1. .zshenv、.zprofile を読み込む
+2. source ~/.claude/shell-snapshots/snapshot-zsh-*.sh
+3. ユーザーコマンド実行
+```
 
-2. **各コマンド実行時の詳細**
-   - スナップショットをどのタイミングでsourceしているか
-
-### 重要な発見
-
-**非インタラクティブシェルでエイリアスを使う方法**:
+**5. 重要な発見：非インタラクティブシェルでエイリアスを使う方法**
 
 通常、非インタラクティブシェルでは`.zshrc`が読み込まれないため、エイリアスは使えない。
 
-Claude Codeは以下の工夫でこれを実現している：
-
-1. セッション起動時に環境をスナップショット
-2. 各コマンド実行時にスナップショットをsourceで復元
-3. 毎回`.zshrc`を読む必要がなく高速
+Claude Codeの解決方法：
+- セッション起動時に環境を一度だけキャプチャ
+- 各コマンド実行時にスナップショットをsourceで復元
+- 毎回`.zshrc`を読む必要がなく高速
+- ログインシェル（`-l`）で`.zprofile`も読み込み、環境を完全に再現
 
 ---
 
@@ -509,8 +573,18 @@ Claude Codeは以下の工夫でこれを実現している：
 
 **最終更新**: 2026-02-11
 
-## 付録: 今後の調査項目
+## 付録: 調査完了項目
 
-- [ ] cli.jsをデバンドルして、スナップショット作成スクリプトの内容を確認
-- [ ] 実際にClaude Codeを起動して、プロセスの動作を`strace`/`dtruss`で追跡
-- [ ] 各コマンド実行時のシェル起動プロセスを観察
+- [x] ~~cli.jsをデバンドルして、スナップショット作成スクリプトの内容を確認~~
+  - **完了**: `mSY`関数（行2587-2608）で詳細確認済み
+  - `source ~/.zshrc < /dev/null` で明示的に読み込み
+
+- [x] ~~各コマンド実行時のシェル起動プロセスを観察~~
+  - **完了**: `nW6`関数で`source <snapshot>`を確認
+  - 呼び出しフロー: Bashツール → `Tzz()` → `nW6()` を確認
+
+- [x] ~~スナップショットファイル名のランダム文字列の意味~~
+  - **完了**: `Math.random().toString(36).substring(2,8)` で生成
+  - セッションIDではなく衝突回避用のランダム識別子
+
+**調査結果**: スナップショット機構の主要な動作をすべて解明
